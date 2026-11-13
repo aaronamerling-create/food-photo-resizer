@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Food Photo Resizer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e2e0da; --accent:#2f6f4f; --warn:#a4462b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:860px; margin:40px auto; padding:0 20px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  #drop { border:2px dashed var(--line); border-radius:12px; padding:36px; text-align:center; color:var(--muted); cursor:pointer; transition:.15s; }
+  #drop.over { border-color:var(--accent); background:#eef5f0; color:var(--accent); }
+  button { font:inherit; padding:10px 16px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .folder { color:var(--muted); font-size:14px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; }
+  td img { width:48px; height:48px; object-fit:cover; border-radius:6px; display:block; }
+  td input { font:inherit; width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; }
+  .status { white-space:nowrap; color:var(--muted); }
+  .status.done { color:var(--accent); }
+  .status.err { color:var(--warn); }
+  .x { border:none; background:none; color:var(--muted); font-size:18px; padding:0 6px; }
+  .specs { font-size:13px; color:var(--muted); margin-top:10px; }
+  #log { font-size:14px; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Food Photo Resizer</h1>
+  <p class="sub">Drop in full-res photos named after the food. Each one comes out as Full, 2MP, 720p and VGA.</p>
+
+  <div class="card">
+    <div id="drop">Drag photos here, paste them, or click to choose<br><small>JPG, PNG or WebP. Batch as many as you want.</small></div>
+    <input id="picker" type="file" accept="image/*" multiple hidden>
+  </div>
+
+  <div class="card" id="listCard" hidden>
+    <table>
+      <thead><tr><th></th><th>Food name (used for file names)</th><th>Original</th><th>Status</th><th></th></tr></thead>
+      <tbody id="list"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="pickFolder">Choose output folder</button>
+      <span class="folder" id="folderName">No folder chosen. Pick or create one on your Desktop.</span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="run" disabled>Process photos</button>
+      <button id="clear">Clear list</button>
+    </div>
+    <div class="specs">
+      Output per photo: <b>Name_Full</b> (untouched original) · <b>Name_2MP</b> (~2,000,000 px) · <b>Name_720p</b> (short side 720) · <b>Name_VGA</b> (short side 480).
+      Aspect ratio is kept, nothing is cropped, nothing is upscaled.
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script>
+const items = [];
+let dirHandle = null;
+const canWriteFolders = 'showDirectoryPicker' in window;
+
+const $ = id => document.getElementById(id);
+const drop = $('drop'), picker = $('picker'), list = $('list');
+
+drop.onclick = () => picker.click();
+picker.onchange = e => { addFiles(e.target.files); picker.value = ''; };
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+document.addEventListener('paste', e => addFiles([...e.clipboardData.files]));
+
+if (!canWriteFolders) {
+  $('pickFolder').hidden = true;
+  $('folderName').textContent = 'This browser cannot write to folders, so results will download as one .zip. Use Chrome or Edge for direct folder output.';
+}
+
+function cleanName(filename) {
+  return filename.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '').trim() || 'photo';
+}
+
+function addFiles(files) {
+  for (const f of files) {
+    if (!f.type.startsWith('image/')) continue;
+    const item = { file: f, name: cleanName(f.name), url: URL.createObjectURL(f), status: 'Ready' };
+    items.push(item);
+  }
+  render();
+}
+
+function render() {
+  $('listCard').hidden = items.length === 0;
+  list.innerHTML = '';
+  items.forEach((it, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><img src="${it.url}"></td>
+      <td><input value="${it.name.replace(/"/g,'&quot;')}"></td>
+      <td class="status">${it.dims || (it.file.size/1048576).toFixed(1) + ' MB'}</td>
+      <td class="status ${it.cls||''}">${it.status}</td>
+      <td><button class="x" title="Remove">×</button></td>`;
+    tr.querySelector('input').oninput = e => it.name = cleanName(e.target.value);
+    tr.querySelector('.x').onclick = () => { items.splice(i,1); render(); };
+    list.appendChild(tr);
+  });
+  $('run').disabled = items.length === 0 || (!zipOnly && !dirHandle);
+}
+
+$('pickFolder').onclick = async () => {
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'desktop' });
+    $('folderName').textContent = 'Saving to: ' + dirHandle.name;
+    render();
+  } catch (e) {
+    if (e.name !== 'AbortError') useZipMode();
+  }
+};
+
+function useZipMode() {
+  dirHandle = null;
+  $('pickFolder').hidden = true;
+  $('folderName').textContent = 'Folder saving is not allowed here, so results will download as one .zip. Unzip it into a folder on your Desktop.';
+  zipOnly = true;
+  render();
+}
+let zipOnly = !canWriteFolders;
+
+$('clear').onclick = () => { items.length = 0; $('log').textContent = ''; render(); };
+
+// ---------- resizing ----------
+function targetSize(w, h, spec) {
+  let s;
+  if (spec === '2MP') s = Math.sqrt(2000000 / (w * h));
+  else if (spec === '720p') s = 720 / Math.min(w, h);
+  else if (spec === 'VGA') s = 480 / Math.min(w, h);
+  s = Math.min(1, s);
+  return [Math.round(w * s), Math.round(h * s)];
+}
+
+// Step down by halves for clean, sharp downscaling
+function resize(bitmap, tw, th) {
+  let src = bitmap, sw = bitmap.width, sh = bitmap.height;
+  while (sw / 2 >= tw && sh / 2 >= th) {
+    const c = new OffscreenCanvas(Math.round(sw/2), Math.round(sh/2));
+    const x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
+    x.drawImage(src, 0, 0, c.width, c.height);
+    src = c; sw = c.width; sh = c.height;
+  }
+  const out = new OffscreenCanvas(tw, th);
+  const ctx = out.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, tw, th);
+  return out.convertToBlob({ type: 'image/jpeg', quality: 0.92 });
+}
+
+function ext(file) {
+  const m = file.name.match(/\.([^.]+)$/);
+  return m ? m[1].toLowerCase() : 'jpg';
+}
+
+async function processItem(it) {
+  const bmp = await createImageBitmap(it.file, { imageOrientation: 'from-image' });
+  it.dims = `${bmp.width}×${bmp.height}`;
+  const outputs = [{ name: `${it.name}_Full.${ext(it.file)}`, blob: it.file }];
+  for (const spec of ['2MP', '720p', 'VGA']) {
+    const [tw, th] = targetSize(bmp.width, bmp.height, spec);
+    outputs.push({ name: `${it.name}_${spec}.jpg`, blob: await resize(bmp, tw, th) });
+  }
+  bmp.close();
+  return outputs;
+}
+
+async function writeToFolder(outputs) {
+  for (const o of outputs) {
+    const fh = await dirHandle.getFileHandle(o.name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(o.blob); await w.close();
+  }
+}
+
+$('run').onclick = async () => {
+  $('run').disabled = true;
+  if (dirHandle && (await dirHandle.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+    $('log').textContent = 'Folder permission was not granted.'; render(); return;
+  }
+  const zipFiles = [];
+  let ok = 0;
+  for (const it of items) {
+    it.status = 'Working…'; it.cls = ''; render();
+    try {
+      const outs = await processItem(it);
+      if (dirHandle) await writeToFolder(outs); else zipFiles.push(...outs);
+      it.status = 'Done'; it.cls = 'done'; ok++;
+    } catch (e) {
+      it.status = 'Failed: ' + e.message; it.cls = 'err';
+    }
+    render();
+  }
+  if (!dirHandle && zipFiles.length) {
+    const zip = await makeZip(zipFiles);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(zip); a.download = 'Food Photos.zip'; a.click();
+  }
+  $('log').textContent = `${ok} of ${items.length} photos processed, ${ok * 4} files written` + (dirHandle ? ` to "${dirHandle.name}".` : ' to the zip.');
+  render();
+};
+
+// ---------- minimal zip (store, no compression) for non-Chrome fallback ----------
+const crcTable = (() => { const t = new Uint32Array(256); for (let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+function crc32(b){ let c=0xFFFFFFFF; for (let i=0;i<b.length;i++) c = crcTable[(c^b[i])&0xFF]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+async function makeZip(files) {
+  const enc = new TextEncoder(), parts = [], central = []; let offset = 0;
+  for (const f of files) {
+    const data = new Uint8Array(await f.blob.arrayBuffer()), name = enc.encode(f.name), crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true);
+    lh.setUint32(14,crc,true); lh.setUint32(18,data.length,true); lh.setUint32(22,data.length,true); lh.setUint16(26,name.length,true);
+    parts.push(lh, name, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true); ch.setUint16(8,0x0800,true);
+    ch.setUint32(16,crc,true); ch.setUint32(20,data.length,true); ch.setUint32(24,data.length,true);
+    ch.setUint16(28,name.length,true); ch.setUint32(42,offset,true);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const size = central.reduce((s,p)=>s+p.byteLength,0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true); end.setUint16(8,files.length,true); end.setUint16(10,files.length,true);
+  end.setUint32(12,size,true); end.setUint32(16,offset,true);
+  return new Blob([...parts, ...central, end], { type: 'application/zip' });
+}
+</script>
+</body>
+</html>
